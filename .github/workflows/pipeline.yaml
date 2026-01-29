@@ -26,7 +26,7 @@ jobs:
           npm install
           npx eslint . --format html --output-file ../../eslint-report.html || echo "Linting finished"
 
-      # --- SAST (FIXED FOR HTML) ---
+      # --- SAST (FIXED FOR HTML WITH EMBEDDED JSON) ---
       - name: 4. Run SAST (Semgrep)
         run: |
           # Generate SARIF report
@@ -47,27 +47,40 @@ jobs:
             --json \
             --output /src/sast-report.json || true
           
-          # Create HTML wrapper
+          # Create HTML with embedded JSON data (no CORS issues)
           python3 << 'PYTHON_SCRIPT'
-          html_content = '''<!DOCTYPE html>
+          import json
+          
+          # Read the JSON data
+          try:
+              with open('sast-report.json', 'r') as f:
+                  json_data = f.read()
+          except:
+              json_data = '{"results": []}'
+          
+          # Create HTML with embedded data
+          html_content = f'''<!DOCTYPE html>
           <html>
           <head>
               <title>Semgrep SAST Report</title>
+              <meta charset="UTF-8">
               <style>
-                  body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-                  h1 { color: #333; }
-                  .summary { background: white; padding: 15px; margin: 20px 0; border-radius: 4px; }
-                  .finding { background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #e74c3c; border-radius: 4px; }
-                  .finding.high { border-left-color: #e74c3c; }
-                  .finding.medium { border-left-color: #f39c12; }
-                  .finding.low { border-left-color: #3498db; }
-                  .finding.info { border-left-color: #95a5a6; }
-                  .code { background: #2d2d2d; color: #f8f8f2; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 10px 0; }
-                  .severity { font-weight: bold; padding: 3px 8px; border-radius: 3px; color: white; display: inline-block; }
-                  .severity.high { background: #e74c3c; }
-                  .severity.medium { background: #f39c12; }
-                  .severity.low { background: #3498db; }
-                  .severity.info { background: #95a5a6; }
+                  body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+                  h1 {{ color: #333; }}
+                  .summary {{ background: white; padding: 15px; margin: 20px 0; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                  .finding {{ background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #e74c3c; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                  .finding.high {{ border-left-color: #e74c3c; }}
+                  .finding.medium {{ border-left-color: #f39c12; }}
+                  .finding.low {{ border-left-color: #3498db; }}
+                  .finding.info {{ border-left-color: #95a5a6; }}
+                  .code {{ background: #2d2d2d; color: #f8f8f2; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 10px 0; font-family: monospace; }}
+                  .severity {{ font-weight: bold; padding: 3px 8px; border-radius: 3px; color: white; display: inline-block; margin-right: 10px; }}
+                  .severity.high {{ background: #e74c3c; }}
+                  .severity.medium {{ background: #f39c12; }}
+                  .severity.low {{ background: #3498db; }}
+                  .severity.info {{ background: #95a5a6; }}
+                  .no-findings {{ background: white; padding: 30px; text-align: center; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                  .no-findings h2 {{ color: #27ae60; }}
               </style>
           </head>
           <body>
@@ -75,63 +88,64 @@ jobs:
               <div class="summary" id="summary">Loading...</div>
               <div id="results"></div>
               <script>
-                  fetch('sast-report.json')
-                      .then(r => r.json())
-                      .then(data => {
-                          const container = document.getElementById('results');
-                          const summary = document.getElementById('summary');
-                          const results = data.results || [];
-                          
-                          // Summary
-                          const counts = { high: 0, medium: 0, low: 0, info: 0 };
-                          results.forEach(r => {
-                              const sev = (r.extra?.severity || 'info').toLowerCase();
-                              counts[sev] = (counts[sev] || 0) + 1;
-                          });
-                          
-                          summary.innerHTML = `
-                              <h3>Summary</h3>
-                              <p><strong>Total Findings:</strong> ${results.length}</p>
-                              <p>
-                                  <span class="severity high">${counts.high || 0} High</span>
-                                  <span class="severity medium">${counts.medium || 0} Medium</span>
-                                  <span class="severity low">${counts.low || 0} Low</span>
-                                  <span class="severity info">${counts.info || 0} Info</span>
-                              </p>
-                          `;
-                          
-                          if (results.length === 0) {
-                              container.innerHTML = '<p style="color: green; font-size: 18px;">✅ No security issues found!</p>';
-                              return;
-                          }
-                          
-                          // Findings
-                          results.forEach(finding => {
-                              const severity = (finding.extra?.severity || 'info').toLowerCase();
-                              const div = document.createElement('div');
-                              div.className = 'finding ' + severity;
-                              div.innerHTML = `
-                                  <h3>
-                                      <span class="severity ${severity}">${severity.toUpperCase()}</span>
-                                      ${finding.check_id || 'Unknown Check'}
-                                  </h3>
-                                  <p><strong>File:</strong> ${finding.path}:${finding.start.line}</p>
-                                  <p><strong>Message:</strong> ${finding.extra?.message || finding.message || 'No description'}</p>
-                                  ${finding.extra?.lines ? '<div class="code"><pre>' + finding.extra.lines + '</pre></div>' : ''}
-                              `;
-                              container.appendChild(div);
-                          });
-                      })
-                      .catch(err => {
-                          document.getElementById('summary').innerHTML = 
-                              '<p style="color: red;">❌ Error loading results: ' + err + '</p>';
-                      });
+                  // Embedded JSON data - no CORS issues!
+                  const data = {json_data};
+                  
+                  const container = document.getElementById('results');
+                  const summary = document.getElementById('summary');
+                  const results = data.results || [];
+                  
+                  // Summary
+                  const counts = {{ high: 0, medium: 0, low: 0, info: 0 }};
+                  results.forEach(r => {{
+                      const sev = (r.extra?.severity || 'info').toLowerCase();
+                      counts[sev] = (counts[sev] || 0) + 1;
+                  }});
+                  
+                  summary.innerHTML = `
+                      <h3>Summary</h3>
+                      <p><strong>Total Findings:</strong> ${{results.length}}</p>
+                      <p>
+                          <span class="severity high">${{counts.high || 0}} High</span>
+                          <span class="severity medium">${{counts.medium || 0}} Medium</span>
+                          <span class="severity low">${{counts.low || 0}} Low</span>
+                          <span class="severity info">${{counts.info || 0}} Info</span>
+                      </p>
+                  `;
+                  
+                  if (results.length === 0) {{
+                      container.innerHTML = '<div class="no-findings"><h2>✅ No security issues found!</h2><p>Your code passed all Semgrep security checks.</p></div>';
+                      return;
+                  }}
+                  
+                  // Findings
+                  results.forEach(finding => {{
+                      const severity = (finding.extra?.severity || 'info').toLowerCase();
+                      const div = document.createElement('div');
+                      div.className = 'finding ' + severity;
+                      
+                      const message = finding.extra?.message || finding.message || 'No description';
+                      const lines = finding.extra?.lines || '';
+                      
+                      div.innerHTML = `
+                          <h3>
+                              <span class="severity ${{severity}}">${{severity.toUpperCase()}}</span>
+                              ${{finding.check_id || 'Unknown Check'}}
+                          </h3>
+                          <p><strong>File:</strong> ${{finding.path}}:${{finding.start.line}}</p>
+                          <p><strong>Message:</strong> ${{message}}</p>
+                          ${{lines ? '<div class="code"><pre>' + lines + '</pre></div>' : ''}}
+                      `;
+                      container.appendChild(div);
+                  }});
               </script>
           </body>
           </html>'''
           
           with open('sast-report.html', 'w') as f:
               f.write(html_content)
+          
+          print("✅ HTML report created with embedded JSON data")
           PYTHON_SCRIPT
           
           # Verify the files exist
