@@ -22,7 +22,7 @@ jobs:
         working-directory: ./services/frontend
         run: |
           npm install -g npm-audit-html
-          # We removed || true. If audit fails to run, the pipeline stops here.
+          # This saves it inside services/frontend/
           npm audit --json | npm-audit-html --output sca-report.html
 
       # --- 2. SAST: Code Analysis (Strict Mode) ---
@@ -36,9 +36,8 @@ jobs:
 
       - name: Run SAST Scan
         run: |
-          # Removing || true. If semgrep fails or finds 0 files, it might error out.
-          semgrep scan --config auto --html -o sast-report.html .
-
+          # The correct command for modern Semgrep
+          semgrep scan --config auto --format html -o sast-report.html .
       # --- 3. Verification Step (If this fails, the pipeline fails) ---
       - name: Confirm Reports Exist
         run: |
@@ -48,7 +47,7 @@ jobs:
       # --- 4. Upload Artifacts ---
       - name: Upload Security Reports
         uses: actions/upload-artifact@v4
-        if: always() # Uploads whatever was managed to be created
+        if: always()
         with:
           name: qa-security-evidence
           path: |
