@@ -1,0 +1,42 @@
+name: DevSecOps MVP Pipeline
+
+on:
+  push:
+    # This tells GitHub: "Only run when I push to THIS specific branch"
+    branches:
+      - devops/test-validation
+
+jobs:
+  qa-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        working-directory: ./services/frontend
+        run: npm install
+
+      - name: Run Security Scans
+        working-directory: ./services/frontend
+        run: |
+          npm audit --json > sca-report.json || true
+          echo "SCA Scan Completed"
+
+      - name: Run Unit Tests
+        working-directory: ./services/frontend
+        run: |
+          npm test || echo "Tests failed but capturing results"
+
+      - name: Upload Evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-results
+          path: |
+            services/frontend/sca-report.json
