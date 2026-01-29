@@ -1,10 +1,8 @@
-name: DevSecOps MVP Pipeline
+name: DevSecOps MVP Pipeline (HTML Reports)
 
 on:
   push:
-    # This tells GitHub: "Only run when I push to THIS specific branch"
-    branches:
-      - devops/test-validation
+    branches: [ "devops/test-validation"]
 
 jobs:
   qa-validation:
@@ -20,23 +18,32 @@ jobs:
 
       - name: Install Dependencies
         working-directory: ./services/frontend
-        run: npm install
+        run: |
+          npm install
+          # Install the HTML reporter for tests
+          npm install --save-dev jest-html-reporters
 
-      - name: Run Security Scans
+      # 1. SECURITY: SCA Scan (Converting JSON to a basic HTML-like log)
+      - name: Dependency Scan
         working-directory: ./services/frontend
         run: |
-          npm audit --json > sca-report.json || true
-          echo "SCA Scan Completed"
+          npm audit > sca-report.txt || true
+          echo "<html><body><h1>SCA Audit Report</h1><pre>$(cat sca-report.txt)</pre></body></html>" > sca-report.html
 
-      - name: Run Unit Tests
+      # 2. TEST: Run Unit Tests with HTML Output
+      - name: Run Unit Tests (HTML)
         working-directory: ./services/frontend
         run: |
-          npm test || echo "Tests failed but capturing results"
+          npm test -- --reporters=default --reporters=jest-html-reporters
+        env:
+          JEST_HTML_REPORTERS_OUTPUT_PATH: ./test-report.html
 
-      - name: Upload Evidence
+      # 3. ARTIFACTS: Upload the HTML files
+      - name: Upload HTML Evidence
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qa-results
+          name: qa-html-reports
           path: |
-            services/frontend/sca-report.json
+            services/frontend/sca-report.html
+            services/frontend/test-report.html
