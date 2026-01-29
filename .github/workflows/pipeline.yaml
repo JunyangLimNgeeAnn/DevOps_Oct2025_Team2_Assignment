@@ -26,10 +26,10 @@ jobs:
           npm install
           npx eslint . --format html --output-file ../../eslint-report.html || echo "Linting finished"
 
-      # --- SAST (FIXED) ---
+      # --- SAST (FIXED FOR HTML) ---
       - name: 4. Run SAST (Semgrep)
         run: |
-          # Run Semgrep and output to workspace (not /src inside container)
+          # Generate SARIF report
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
             returntocorp/semgrep \
@@ -38,18 +38,105 @@ jobs:
             --sarif \
             --output /src/sast-report.sarif || true
           
-          # Also generate HTML report
+          # Generate JSON report
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
             returntocorp/semgrep \
             semgrep scan /src \
             --config auto \
-            --html \
-            --output /src/sast-report.html || true
+            --json \
+            --output /src/sast-report.json || true
+          
+          # Create HTML wrapper
+          python3 << 'PYTHON_SCRIPT'
+          html_content = '''<!DOCTYPE html>
+          <html>
+          <head>
+              <title>Semgrep SAST Report</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+                  h1 { color: #333; }
+                  .summary { background: white; padding: 15px; margin: 20px 0; border-radius: 4px; }
+                  .finding { background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #e74c3c; border-radius: 4px; }
+                  .finding.high { border-left-color: #e74c3c; }
+                  .finding.medium { border-left-color: #f39c12; }
+                  .finding.low { border-left-color: #3498db; }
+                  .finding.info { border-left-color: #95a5a6; }
+                  .code { background: #2d2d2d; color: #f8f8f2; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 10px 0; }
+                  .severity { font-weight: bold; padding: 3px 8px; border-radius: 3px; color: white; display: inline-block; }
+                  .severity.high { background: #e74c3c; }
+                  .severity.medium { background: #f39c12; }
+                  .severity.low { background: #3498db; }
+                  .severity.info { background: #95a5a6; }
+              </style>
+          </head>
+          <body>
+              <h1>🔒 Semgrep SAST Report</h1>
+              <div class="summary" id="summary">Loading...</div>
+              <div id="results"></div>
+              <script>
+                  fetch('sast-report.json')
+                      .then(r => r.json())
+                      .then(data => {
+                          const container = document.getElementById('results');
+                          const summary = document.getElementById('summary');
+                          const results = data.results || [];
+                          
+                          // Summary
+                          const counts = { high: 0, medium: 0, low: 0, info: 0 };
+                          results.forEach(r => {
+                              const sev = (r.extra?.severity || 'info').toLowerCase();
+                              counts[sev] = (counts[sev] || 0) + 1;
+                          });
+                          
+                          summary.innerHTML = `
+                              <h3>Summary</h3>
+                              <p><strong>Total Findings:</strong> ${results.length}</p>
+                              <p>
+                                  <span class="severity high">${counts.high || 0} High</span>
+                                  <span class="severity medium">${counts.medium || 0} Medium</span>
+                                  <span class="severity low">${counts.low || 0} Low</span>
+                                  <span class="severity info">${counts.info || 0} Info</span>
+                              </p>
+                          `;
+                          
+                          if (results.length === 0) {
+                              container.innerHTML = '<p style="color: green; font-size: 18px;">✅ No security issues found!</p>';
+                              return;
+                          }
+                          
+                          // Findings
+                          results.forEach(finding => {
+                              const severity = (finding.extra?.severity || 'info').toLowerCase();
+                              const div = document.createElement('div');
+                              div.className = 'finding ' + severity;
+                              div.innerHTML = `
+                                  <h3>
+                                      <span class="severity ${severity}">${severity.toUpperCase()}</span>
+                                      ${finding.check_id || 'Unknown Check'}
+                                  </h3>
+                                  <p><strong>File:</strong> ${finding.path}:${finding.start.line}</p>
+                                  <p><strong>Message:</strong> ${finding.extra?.message || finding.message || 'No description'}</p>
+                                  ${finding.extra?.lines ? '<div class="code"><pre>' + finding.extra.lines + '</pre></div>' : ''}
+                              `;
+                              container.appendChild(div);
+                          });
+                      })
+                      .catch(err => {
+                          document.getElementById('summary').innerHTML = 
+                              '<p style="color: red;">❌ Error loading results: ' + err + '</p>';
+                      });
+              </script>
+          </body>
+          </html>'''
+          
+          with open('sast-report.html', 'w') as f:
+              f.write(html_content)
+          PYTHON_SCRIPT
           
           # Verify the files exist
           echo "=== Checking SAST reports ==="
-          ls -lh sast-report.html sast-report.sarif || echo "Some report files missing"
+          ls -lh sast-report.json sast-report.sarif sast-report.html || echo "Some report files missing"
 
       # --- SCA ---
       - name: 5. Run SCA (NPM Audit)
@@ -92,6 +179,7 @@ jobs:
           name: DevSecOps-Quality-Reports
           path: |
             sast-report.html
+            sast-report.json
             sast-report.sarif
             sca-report.html
             eslint-report.html
