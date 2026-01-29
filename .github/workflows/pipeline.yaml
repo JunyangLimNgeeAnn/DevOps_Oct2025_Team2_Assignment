@@ -24,12 +24,12 @@ jobs:
           npm audit --json | npm-audit-html --output sca-report.html || true
 
       # --- SAST: Code Analysis ---
+      # --- SAST: Code Analysis ---
       - name: SAST Scan (HTML)
+        # We run this from the root so it sees the whole project
         run: |
-          # Install Semgrep
           python3 -m pip install semgrep
-          # Scan the specific services folder and force an HTML output
-          semgrep scan --config auto --html -o sast-report.html ./services/frontend || true
+          semgrep scan --config auto --html -o sast-report.html || true
 
       # 3. Unit Tests (Simple console output, no HTML)
       - name: Run Unit Tests
@@ -37,7 +37,8 @@ jobs:
         run: |
           npm test || echo "Tests skipped or failed, continuing to upload security reports..."
 
-      # 4. Artifacts: Upload ONLY the Security HTML files
+
+      # --- Artifact Upload ---
       - name: Upload Security Evidence
         uses: actions/upload-artifact@v4
         if: always()
