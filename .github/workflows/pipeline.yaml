@@ -25,12 +25,14 @@ jobs:
           npx eslint . || echo "Linting finished"
 
       # --- SAST (The core of your scan) ---
+      # --- SECURITY STAGE (SAST) ---
       - name: 4. Run SAST (Semgrep)
         run: |
-          # We add --user root and a specific /src path to ensure the file is written
-          docker run --user root --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan --config auto --html -o /src/sast-report.html || true
+          # 1. We use '--format html' for the new version
+          # 2. We use '-o /src/sast-report.html' to save it to the mounted root
+          docker run --user root --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan --config auto --format html -o /src/sast-report.html || true
           
-          # Debugging step: This will show in your logs if the file actually exists
+          # 3. Check if the file exists on the host runner
           ls -lh sast-report.html || echo "Report file NOT found!"
 
       # --- SCA (The core of your dependency check) ---
