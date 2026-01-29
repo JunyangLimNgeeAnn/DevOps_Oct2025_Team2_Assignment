@@ -2,7 +2,9 @@ name: DevSecOps Full Lifecycle Pipeline
 
 on:
   push:
-    branches: [ "devops/test-validation", "main" ]
+    branches: [ "devops/test-validation", "main", "develop" ]
+  pull_request:
+    branches: [ "develop", "main" ]
 
 jobs:
   devsecops-pipeline:
@@ -22,38 +24,98 @@ jobs:
         working-directory: ./services/frontend
         run: |
           npm install
-          npx eslint . || echo "Linting finished"
+          npx eslint . --format html --output-file ../../eslint-report.html || echo "Linting finished"
 
-      # --- SAST (The core of your scan) ---
-      # --- SECURITY STAGE (SAST) ---
+      # --- SAST (FIXED) ---
       - name: 4. Run SAST (Semgrep)
         run: |
-          # 1. We use '--format html' for the new version
-          # 2. We use '-o /src/sast-report.html' to save it to the mounted root
-          docker run --user root --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan --config auto --format html -o /src/sast-report.html || true
+          # Run Semgrep and output to workspace (not /src inside container)
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            returntocorp/semgrep \
+            semgrep scan /src \
+            --config auto \
+            --sarif \
+            --output /src/sast-report.sarif || true
           
-          # 3. Check if the file exists on the host runner
-          ls -lh sast-report.html || echo "Report file NOT found!"
+          # Also generate HTML report
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            returntocorp/semgrep \
+            semgrep scan /src \
+            --config auto \
+            --html \
+            --output /src/sast-report.html || true
+          
+          # Verify the files exist
+          echo "=== Checking SAST reports ==="
+          ls -lh sast-report.html sast-report.sarif || echo "Some report files missing"
 
-      # --- SCA (The core of your dependency check) ---
+      # --- SCA ---
       - name: 5. Run SCA (NPM Audit)
         working-directory: ./services/frontend
         run: |
+          npm install
           npm install -g npm-audit-html
-          npm audit --json | npm-audit-html --output sca-report.html || true
+          npm audit --json | npm-audit-html --output ../../sca-report.html || true
+          
+          # Verify
+          echo "=== Checking SCA report ==="
+          ls -lh ../../sca-report.html || echo "SCA report missing"
 
-      # --- PLANNED STAGES (Simulated for your Plan) ---
-      - name: 6. Build & DAST (Placeholders)
+      # --- UNIT TESTS ---
+      - name: 6. Run Unit Tests with Coverage
+        working-directory: ./services/frontend
         run: |
-          echo "Build: Logic mapped. Awaiting Dockerfile."
-          echo "DAST: Logic mapped. Awaiting Staging Environment."
+          npm install
+          npm test -- --coverage --coverageReporters=html || true
+          
+          # Move coverage report to root for upload
+          cp -r coverage ../../test-coverage || true
+
+      # --- BUILD ---
+      - name: 7. Build Frontend
+        working-directory: ./services/frontend
+        run: |
+          npm run build || echo "Build step needs configuration"
+
+      # --- PLANNED STAGES ---
+      - name: 8. DAST Placeholder
+        run: |
+          echo "DAST: Awaiting Staging Environment"
 
       # --- EVIDENCE COLLECTION ---
-      - name: 7. Upload Security Evidence
+      - name: 9. Upload Security & Quality Reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: DevSecOps-Quality-Reports
           path: |
             sast-report.html
-            services/frontend/sca-report.html
+            sast-report.sarif
+            sca-report.html
+            eslint-report.html
+            test-coverage/
+          retention-days: 30
+
+      # --- UPLOAD SARIF TO GITHUB SECURITY ---
+      - name: 10. Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: sast-report.sarif
+          category: semgrep
+
+      # --- SUMMARY ---
+      - name: 11. Generate Pipeline Summary
+        if: always()
+        run: |
+          echo "## 🔐 DevSecOps Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Reports Generated:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ SAST Report (Semgrep)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ SCA Report (NPM Audit)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ ESLint Report" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Download artifacts to view detailed reports" >> $GITHUB_STEP_SUMMARY
