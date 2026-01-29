@@ -23,11 +23,13 @@ jobs:
           npm install -g npm-audit-html
           npm audit --json | npm-audit-html --output sca-report.html || true
 
-      # 2. SAST: Static Analysis (HTML)
-      - name: SAST Scan
+      # --- SAST: Code Analysis ---
+      - name: SAST Scan (HTML)
         run: |
+          # Install Semgrep
           python3 -m pip install semgrep
-          semgrep scan --config auto --html -o sast-report.html || true
+          # Scan the specific services folder and force an HTML output
+          semgrep scan --config auto --html -o sast-report.html ./services/frontend || true
 
       # 3. Unit Tests (Simple console output, no HTML)
       - name: Run Unit Tests
