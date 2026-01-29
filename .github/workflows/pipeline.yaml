@@ -36,8 +36,8 @@ jobs:
 
       - name: Run SAST Scan
         run: |
-          # The correct command for modern Semgrep
-          semgrep scan --config auto --format html -o sast-report.html .
+          # We use the explicit output flag with the file extension
+          semgrep scan --config auto --output=sast-report.html --html .
       # --- 3. Verification Step (If this fails, the pipeline fails) ---
       - name: Confirm Reports Exist
         run: |
