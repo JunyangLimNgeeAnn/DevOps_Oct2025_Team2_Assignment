@@ -27,8 +27,11 @@ jobs:
       # --- SAST (The core of your scan) ---
       - name: 4. Run SAST (Semgrep)
         run: |
-          # This runs in a Docker container provided by Semgrep
-          docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan --config auto --html -o sast-report.html || true
+          # We add --user root and a specific /src path to ensure the file is written
+          docker run --user root --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan --config auto --html -o /src/sast-report.html || true
+          
+          # Debugging step: This will show in your logs if the file actually exists
+          ls -lh sast-report.html || echo "Report file NOT found!"
 
       # --- SCA (The core of your dependency check) ---
       - name: 5. Run SCA (NPM Audit)
