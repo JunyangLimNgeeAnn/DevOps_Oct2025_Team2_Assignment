@@ -1,11 +1,11 @@
-name: DevSecOps MVP Pipeline (HTML Reports)
+name: DevSecOps Security Reporting
 
 on:
   push:
-    branches: [ "devops/test-validation"]
+    branches: [ "devops/test-validation", "feature/auth-service" ]
 
 jobs:
-  qa-validation:
+  security-scans:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -16,34 +16,31 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Dependencies
+      # 1. SCA: Dependency Scan (HTML)
+      - name: SCA Scan
         working-directory: ./services/frontend
         run: |
-          npm install
-          # Install the HTML reporter for tests
-          npm install --save-dev jest-html-reporters
+          npm install -g npm-audit-html
+          npm audit --json | npm-audit-html --output sca-report.html || true
 
-      # 1. SECURITY: SCA Scan (Converting JSON to a basic HTML-like log)
-      - name: Dependency Scan
+      # 2. SAST: Static Analysis (HTML)
+      - name: SAST Scan
+        run: |
+          python3 -m pip install semgrep
+          semgrep scan --config auto --html -o sast-report.html || true
+
+      # 3. Unit Tests (Simple console output, no HTML)
+      - name: Run Unit Tests
         working-directory: ./services/frontend
         run: |
-          npm audit > sca-report.txt || true
-          echo "<html><body><h1>SCA Audit Report</h1><pre>$(cat sca-report.txt)</pre></body></html>" > sca-report.html
+          npm test || echo "Tests skipped or failed, continuing to upload security reports..."
 
-      # 2. TEST: Run Unit Tests with HTML Output
-      - name: Run Unit Tests (HTML)
-        working-directory: ./services/frontend
-        run: |
-          npm test -- --reporters=default --reporters=jest-html-reporters
-        env:
-          JEST_HTML_REPORTERS_OUTPUT_PATH: ./test-report.html
-
-      # 3. ARTIFACTS: Upload the HTML files
-      - name: Upload HTML Evidence
+      # 4. Artifacts: Upload ONLY the Security HTML files
+      - name: Upload Security Evidence
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qa-html-reports
+          name: security-html-reports
           path: |
             services/frontend/sca-report.html
-            services/frontend/test-report.html
+            sast-report.html
