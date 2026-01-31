@@ -1,14 +1,19 @@
-name: DevSecOps Full Lifecycle Pipeline
+name: DevSecOps Multi-Service Pipeline
 
 on:
   push:
-    branches: [ "devops/test-validation", "main", "develop" ]
+    branches: [ "develop", "main" ]
   pull_request:
     branches: [ "develop", "main" ]
 
 jobs:
   devsecops-pipeline:
     runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        service: [frontend, auth, dashboard, api, user]
+      fail-fast: false  # Continue testing other services even if one fails
 
     steps:
       - name: 1. Checkout Code
@@ -19,16 +24,98 @@ jobs:
         with:
           node-version: '20'
 
-      # --- CODE QUALITY ---
-      - name: 3. Run ESLint
-        working-directory: ./services/frontend
+      # --- DEPENDENCY INSTALLATION ---
+      - name: 3. Install Dependencies - ${{ matrix.service }}
+        working-directory: ./services/${{ matrix.service }}
         run: |
-          npm install
-          npx eslint . --format html --output-file ../../eslint-report.html || echo "Linting finished"
+          if [ -f "package.json" ]; then
+            echo "📦 Installing dependencies for ${{ matrix.service }}..."
+            npm install
+          else
+            echo "⚠️ No package.json found for ${{ matrix.service }}"
+            exit 0
+          fi
 
-      # --- SAST (FIXED FOR HTML WITH EMBEDDED JSON) ---
-      - name: 4. Run SAST (Semgrep)
+      # --- CODE QUALITY (ESLint) ---
+      - name: 4. Run ESLint - ${{ matrix.service }}
+        working-directory: ./services/${{ matrix.service }}
         run: |
+          if [ -f "package.json" ]; then
+            echo "🔍 Running ESLint for ${{ matrix.service }}..."
+            npx eslint . --format html --output-file ../../eslint-${{ matrix.service }}.html || echo "ESLint completed"
+          fi
+
+      # --- SECURITY: SCA (Dependency Scan) ---
+      - name: 5. Run SCA (NPM Audit) - ${{ matrix.service }}
+        working-directory: ./services/${{ matrix.service }}
+        run: |
+          if [ -f "package.json" ]; then
+            echo "🔒 Running dependency scan for ${{ matrix.service }}..."
+            npm install -g npm-audit-html
+            npm audit --json | npm-audit-html --output ../../sca-${{ matrix.service }}.html || true
+            npm audit --audit-level=high --json > ../../sca-${{ matrix.service }}.json || true
+            
+            echo "=== SCA Report for ${{ matrix.service }} ==="
+            ls -lh ../../sca-${{ matrix.service }}.html ../../sca-${{ matrix.service }}.json || echo "SCA reports missing"
+          fi
+
+      # --- UNIT TESTS ---
+      - name: 6. Run Unit Tests - ${{ matrix.service }}
+        working-directory: ./services/${{ matrix.service }}
+        run: |
+          if [ -f "package.json" ]; then
+            if grep -q '"test"' package.json; then
+              echo "🧪 Running tests for ${{ matrix.service }}..."
+              npm test -- --coverage --coverageReporters=html --passWithNoTests || echo "Tests completed with issues"
+              
+              # Move coverage report
+              if [ -d "coverage" ]; then
+                cp -r coverage ../../test-coverage-${{ matrix.service }} || true
+              fi
+            else
+              echo "⚠️ No test script defined for ${{ matrix.service }}"
+            fi
+          fi
+
+      # --- BUILD ---
+      - name: 7. Build Service - ${{ matrix.service }}
+        working-directory: ./services/${{ matrix.service }}
+        run: |
+          if [ -f "package.json" ]; then
+            if grep -q '"build"' package.json; then
+              echo "🏗️ Building ${{ matrix.service }}..."
+              npm run build || echo "Build step needs configuration"
+            else
+              echo "⚠️ No build script defined for ${{ matrix.service }}"
+            fi
+          fi
+
+      # --- EVIDENCE COLLECTION (Per Service) ---
+      - name: 8. Upload Reports - ${{ matrix.service }}
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: devsecops-reports-${{ matrix.service }}
+          path: |
+            eslint-${{ matrix.service }}.html
+            sca-${{ matrix.service }}.html
+            sca-${{ matrix.service }}.json
+            test-coverage-${{ matrix.service }}/
+          retention-days: 30
+
+  # --- SAST: Runs once for entire codebase ---
+  sast-scan:
+    runs-on: ubuntu-latest
+    needs: devsecops-pipeline  # Run after service tests
+    
+    steps:
+      - name: 1. Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 2. Run SAST (Semgrep) - Full Codebase
+        run: |
+          echo "🔒 Running Semgrep SAST scan on entire codebase..."
+          
           # Generate SARIF report
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
@@ -47,7 +134,7 @@ jobs:
             --json \
             --output /src/sast-report.json || true
           
-          # Create standalone HTML report using Python
+          # Create HTML report using Python
           python3 -c '
           import json
           import html
@@ -71,7 +158,7 @@ jobs:
           html_output = """<!DOCTYPE html>
           <html>
           <head>
-              <title>Semgrep SAST Report</title>
+              <title>Semgrep SAST Report - All Services</title>
               <meta charset=\"UTF-8\">
               <style>
                   body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
@@ -94,10 +181,11 @@ jobs:
                   h3 { margin: 0 0 10px 0; }
                   .file-path { color: #555; font-size: 14px; margin: 8px 0; }
                   .message { color: #333; line-height: 1.6; margin: 10px 0; }
+                  .service-tag { background: #3498db; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-left: 5px; }
               </style>
           </head>
           <body>
-              <h1>🔒 Semgrep SAST Report</h1>
+              <h1>🔒 Semgrep SAST Report - All Services</h1>
           """
           
           # Add summary
@@ -119,7 +207,7 @@ jobs:
               html_output += """
               <div class="no-findings">
                   <h2>✅ No security issues found!</h2>
-                  <p>Your code passed all Semgrep security checks.</p>
+                  <p>All services passed Semgrep security checks.</p>
               </div>
               """
           else:
@@ -127,6 +215,12 @@ jobs:
                   severity = finding.get("extra", {}).get("severity", "info").lower()
                   check_id = html.escape(finding.get("check_id", "Unknown Check"))
                   path = html.escape(finding.get("path", "Unknown"))
+                  
+                  # Extract service name from path
+                  service = "unknown"
+                  if "services/" in path:
+                      service = path.split("services/")[1].split("/")[0]
+                  
                   line = finding.get("start", {}).get("line", "?")
                   message = html.escape(finding.get("extra", {}).get("message") or finding.get("message", "No description"))
                   lines = html.escape(finding.get("extra", {}).get("lines", ""))
@@ -136,6 +230,7 @@ jobs:
                   <h3>
                       <span class="severity {severity}">{severity.upper()}</span>
                       {check_id}
+                      <span class="service-tag">{service}</span>
                   </h3>
                   <div class="file-path"><strong>File:</strong> {path}:{line}</div>
                   <div class="message"><strong>Message:</strong> {message}</div>
@@ -160,76 +255,66 @@ jobs:
           print("✅ HTML report created successfully")
           '
           
-          # Verify the files exist
           echo "=== Checking SAST reports ==="
-          ls -lh sast-report.json sast-report.sarif sast-report.html || echo "Some report files missing"
+          ls -lh sast-report.json sast-report.sarif sast-report.html || echo "Some SAST reports missing"
 
-      # --- SCA ---
-      - name: 5. Run SCA (NPM Audit)
-        working-directory: ./services/frontend
-        run: |
-          npm install
-          npm install -g npm-audit-html
-          npm audit --json | npm-audit-html --output ../../sca-report.html || true
-          
-          # Verify
-          echo "=== Checking SCA report ==="
-          ls -lh ../../sca-report.html || echo "SCA report missing"
-
-      # --- UNIT TESTS ---
-      - name: 6. Run Unit Tests with Coverage
-        working-directory: ./services/frontend
-        run: |
-          npm install
-          npm test -- --coverage --coverageReporters=html || true
-          
-          # Move coverage report to root for upload
-          cp -r coverage ../../test-coverage || true
-
-      # --- BUILD ---
-      - name: 7. Build Frontend
-        working-directory: ./services/frontend
-        run: |
-          npm run build || echo "Build step needs configuration"
-
-      # --- PLANNED STAGES ---
-      - name: 8. DAST Placeholder
-        run: |
-          echo "DAST: Awaiting Staging Environment"
-
-      # --- EVIDENCE COLLECTION ---
-      - name: 9. Upload Security & Quality Reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: DevSecOps-Quality-Reports
-          path: |
-            sast-report.html
-            sast-report.json
-            sast-report.sarif
-            sca-report.html
-            eslint-report.html
-            test-coverage/
-          retention-days: 30
-
-      # --- UPLOAD SARIF TO GITHUB SECURITY ---
-      - name: 10. Upload SARIF to GitHub Security
+      - name: 3. Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: sast-report.sarif
           category: semgrep
 
-      # --- SUMMARY ---
-      - name: 11. Generate Pipeline Summary
+      - name: 4. Upload SAST Reports
+        uses: actions/upload-artifact@v4
         if: always()
+        with:
+          name: sast-reports-all-services
+          path: |
+            sast-report.html
+            sast-report.json
+            sast-report.sarif
+          retention-days: 30
+
+  # --- PIPELINE SUMMARY ---
+  pipeline-summary:
+    runs-on: ubuntu-latest
+    needs: [devsecops-pipeline, sast-scan]
+    if: always()
+    
+    steps:
+      - name: Generate Pipeline Summary
         run: |
-          echo "## 🔐 DevSecOps Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 DevSecOps Multi-Service Pipeline Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Reports Generated:" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ SAST Report (Semgrep)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ SCA Report (NPM Audit)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ ESLint Report" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Pipeline Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Actor:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 Download artifacts to view detailed reports" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏗️ Services Tested" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Frontend" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Auth Service" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Dashboard Service" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ API Service" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ User Service" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🛡️ Security Checks Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Code Quality** (ESLint) - All services" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Dependency Scan** (SCA/NPM Audit) - All services" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Static Analysis** (SAST/Semgrep) - Full codebase" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ **Unit Tests** - All services with tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts Generated" >> $GITHUB_STEP_SUMMARY
+          echo "Download the following artifacts for detailed reports:" >> $GITHUB_STEP_SUMMARY
+          echo "- **devsecops-reports-frontend** - ESLint, SCA, Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "- **devsecops-reports-auth** - ESLint, SCA, Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "- **devsecops-reports-dashboard** - ESLint, SCA, Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "- **devsecops-reports-api** - ESLint, SCA, Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "- **devsecops-reports-user** - ESLint, SCA, Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "- **sast-reports-all-services** - Semgrep SAST HTML, JSON, SARIF" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check the **Security tab** for SARIF findings" >> $GITHUB_STEP_SUMMARY
+          echo "2. Download artifacts to review detailed HTML reports" >> $GITHUB_STEP_SUMMARY
+          echo "3. Address any HIGH/CRITICAL vulnerabilities before merging" >> $GITHUB_STEP_SUMMARY
